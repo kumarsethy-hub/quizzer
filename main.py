@@ -1,11 +1,22 @@
 import json, os, re, asyncio
 from telegram import Update, Poll
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, PollAnswerHandler, ContextTypes, filters
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    PollAnswerHandler,
+    ContextTypes,
+    filters
+)
 
-TOKEN = "8408399408:AAG78l8992exfhqlYtfKI10s43tfex12MLo"
+# ------------------- ENV VARIABLES -------------------
+TOKEN = os.environ.get("8408399408:AAG78l8992exfhqlYtfKI10s43tfex12MLo")  # Bot token from Render env
+QUIZ_FILE = os.environ.get("QUIZ_FILE", "quizzes.json")  # Optional: path for quiz storage
 
-QUIZ_FILE = "quizzes.json"
-STATE = {}
+STATE = {}  # chat_id -> quiz state
+SCORES = {}  # chat_id -> {user_id: score}
+
+# ------------------- QUIZ DATA HANDLING -------------------
 
 def load_quizzes():
     if os.path.exists(QUIZ_FILE):
@@ -39,8 +50,12 @@ def parse_questions(text):
             questions.append((q, opts, ans, exp))
     return questions
 
+# ------------------- COMMAND HANDLERS -------------------
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Welcome to QuizBot!\nUse /createquiz <title> to begin.")
+    await update.message.reply_text(
+        "👋 Welcome to QuizBot!\nUse /createquiz <title> to begin."
+    )
 
 async def createquiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = str(update.effective_user.id)
@@ -95,7 +110,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def myquizzes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = str(update.effective_user.id)
     data = load_quizzes()
-    if user not in data:
+    if user not in data or not data[user]:
         await update.message.reply_text("You have no quizzes.")
         return
     await update.message.reply_text("\n".join(data[user].keys()))
@@ -114,6 +129,8 @@ async def deletequiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Quiz not found.")
 
+# ------------------- QUIZ LOGIC -------------------
+
 async def hostquiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = str(update.effective_user.id)
     if not context.args:
@@ -124,22 +141,30 @@ async def hostquiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user not in data or title not in data[user] or not data[user][title]:
         await update.message.reply_text("Quiz not found or has no questions.")
         return
+
     chat_id = update.effective_chat.id
     STATE[chat_id] = {
         "questions": data[user][title],
         "current": 0,
-        "message_ids": [],
+        "poll_ids": [],
         "running": True
     }
+    SCORES[chat_id] = {}
     await send_next_question(chat_id, context)
 
-async def send_next_question(chat_id, context):
+async def send_next_question(chat_id, context: ContextTypes.DEFAULT_TYPE):
     state = STATE.get(chat_id)
     if not state or not state["running"]:
         return
     if state["current"] >= len(state["questions"]):
-        await context.bot.send_message(chat_id, "✅ Quiz Finished!")
+        leaderboard_text = "🏆 Quiz Finished!\n\nLeaderboard:\n"
+        scores = SCORES.get(chat_id, {})
+        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        for uid, score in sorted_scores:
+            leaderboard_text += f"{uid}: {score}\n"
+        await context.bot.send_message(chat_id, leaderboard_text)
         STATE.pop(chat_id)
+        SCORES.pop(chat_id)
         return
     q, opts, ans_idx, explanation = state["questions"][state["current"]]
     poll = await context.bot.send_poll(
@@ -152,7 +177,7 @@ async def send_next_question(chat_id, context):
         is_anonymous=False,
         open_period=20
     )
-    state["message_ids"].append(poll.message_id)
+    state["poll_ids"].append(poll.id)
     state["current"] += 1
 
 async def stopquiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -164,16 +189,26 @@ async def stopquiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No active quiz to stop.")
 
 async def poll_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.poll_answer.user.id
-    for cid in list(STATE.keys()):
-        if STATE[cid]["running"]:
-            await send_next_question(cid, context)
+    poll_id = update.poll_answer.poll_id
+    user_id = update.poll_answer.user.id
+    option_id = update.poll_answer.option_ids[0]
 
-async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚧 Leaderboard feature coming soon!")
+    # Find which chat this poll belongs to
+    for chat_id, state in STATE.items():
+        if poll_id in state.get("poll_ids", []):
+            correct_option = state["questions"][state["current"] - 1][2]
+            if option_id == correct_option:
+                SCORES.setdefault(chat_id, {}).setdefault(user_id, 0)
+                SCORES[chat_id][user_id] += 1
+            await send_next_question(chat_id, context)
+            break
+
+# ------------------- MAIN -------------------
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
+
+    # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("createquiz", createquiz))
     app.add_handler(CommandHandler("addq", createquiz))
@@ -181,9 +216,13 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("deletequiz", deletequiz))
     app.add_handler(CommandHandler("hostquiz", hostquiz))
     app.add_handler(CommandHandler("stopquiz", stopquiz))
-    app.add_handler(CommandHandler("leaderboard", leaderboard))
+
+    # Message handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_txt))
     app.add_handler(MessageHandler(filters.Document.TEXT, handle_file))
+
+    # Poll answers
     app.add_handler(PollAnswerHandler(poll_handler))
+
     print("🤖 QuizMaster Bot is running...")
     app.run_polling()
