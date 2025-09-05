@@ -2,7 +2,7 @@ import json, os, re, asyncio
 from telegram import Update, Poll
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, PollAnswerHandler, ContextTypes, filters
 
-TOKEN = "8408399408:AAF9KCPXUeRQ9-LK-5QcsPQh7hsXgqkRC58"
+TOKEN = "8395289253:AAHIrBl-7Y2QSAyloVPyEdRzjj3e_xl8Q50"
 
 QUIZ_FILE = "quizzes.json"
 STATE = {}
